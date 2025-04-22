@@ -1,81 +1,54 @@
 import streamlit as st
-from streamlit.components.v1 import html
 import uuid
-
-
-# 辅助函数
-def get_all_task_options(task, options=None, level=0):
-    if options is None:
-        options = []
-    options.append((task.task_id, "    " * level + task.name))
-    for child in task.children:
-        get_all_task_options(child, options, level + 1)
-    return options
-
-def set_task_completed(task_id, completed):
-    task = st.session_state.root_task.find_task_by_id(task_id)
-    if task:
-        task.is_completed = completed
-
+from typing import List, Dict, Optional
 
 class TaskNode:
-    def __init__(self, name, description="", is_completed=False, parent=None, task_id=None):
-        """
-        初始化任务节点
-        
-        参数:
-            name: 任务名称
-            description: 任务描述
-            is_completed: 初始完成状态
-            parent: 父任务
-            task_id: 任务唯一ID
-        """
+    def __init__(self, name: str, description: str = "", is_completed: bool = False, 
+                 parent: Optional['TaskNode'] = None, task_id: Optional[str] = None):
         self.task_id = task_id if task_id else str(uuid.uuid4())
         self.name = name
         self.description = description
         self._is_completed = is_completed
-        self.children = []
+        self.children: List['TaskNode'] = []
         self.parent = parent
+        self.is_expanded = False
     
     @property
-    def is_completed(self):
-        """获取任务完成状态(自动计算)"""
-        if not self.children:  # 如果是叶子节点
+    def is_completed(self) -> bool:
+        if not self.children:
             return self._is_completed
-        else:  # 如果是父节点，状态由子节点决定
+        else:
             return all(child.is_completed for child in self.children)
     
     @is_completed.setter
-    def is_completed(self, value):
-        """设置任务完成状态(仅对叶子节点有效)"""
-        if not self.children:  # 只有叶子节点可以直接设置状态
+    def is_completed(self, value: bool):
+        if not self.children:
             self._is_completed = value
-            # 状态改变后需要通知父节点更新
             if self.parent:
                 self.parent.notify_child_changed()
         else:
             st.warning("非叶子节点的状态由其子节点自动决定，不能直接设置")
     
-    def add_child(self, name, description=""):
-        """添加子任务"""
+    def add_child(self, name: str, description: str = "") -> 'TaskNode':
         child = TaskNode(name, description, parent=self)
         self.children.append(child)
         self.notify_child_changed()
         return child
     
-    def remove_child(self, child):
-        """移除子任务"""
+    def remove_self(self):
+        if self.parent:
+            self.parent.remove_child(self)
+    
+    def remove_child(self, child: 'TaskNode'):
         if child in self.children:
             self.children.remove(child)
             self.notify_child_changed()
     
     def notify_child_changed(self):
-        """子节点变化时通知父节点更新状态"""
         if self.parent:
             self.parent.notify_child_changed()
     
-    def find_task_by_id(self, task_id):
-        """根据ID查找任务"""
+    def find_task_by_id(self, task_id: str) -> Optional['TaskNode']:
         if self.task_id == task_id:
             return self
         for child in self.children:
@@ -84,19 +57,21 @@ class TaskNode:
                 return found
         return None
     
-    def to_dict(self):
-        """将任务转换为字典(用于序列化)"""
+    def toggle_expand(self):
+        self.is_expanded = not self.is_expanded
+    
+    def to_dict(self) -> Dict:
         return {
             "task_id": self.task_id,
             "name": self.name,
             "description": self.description,
             "is_completed": self._is_completed,
+            "is_expanded": self.is_expanded,
             "children": [child.to_dict() for child in self.children]
         }
     
     @classmethod
-    def from_dict(cls, data, parent=None):
-        """从字典创建任务(用于反序列化)"""
+    def from_dict(cls, data: Dict, parent: Optional['TaskNode'] = None) -> 'TaskNode':
         task = cls(
             name=data["name"],
             description=data["description"],
@@ -104,113 +79,176 @@ class TaskNode:
             parent=parent,
             task_id=data["task_id"]
         )
+        task.is_expanded = data.get("is_expanded", False)
         task.children = [cls.from_dict(child, task) for child in data["children"]]
         return task
-    
-    def __repr__(self):
-        status = "✓" if self.is_completed else "✗"
-        return f"{status} {self.name} ({len(self.children)}子任务)"
 
-# Streamlit应用
+def get_all_task_options(tasks: List[TaskNode], options: Optional[List] = None, level: int = 0) -> List:
+    if options is None:
+        options = []
+    for task in tasks:
+        options.append((task.task_id, "    " * level + task.name))
+        if task.is_expanded:
+            get_all_task_options(task.children, options, level + 1)
+    return options
+
+def find_task_in_list(tasks: List[TaskNode], task_id: str) -> Optional[TaskNode]:
+    for task in tasks:
+        found = task.find_task_by_id(task_id)
+        if found:
+            return found
+    return None
+
+def set_task_completed(task_id: str, completed: bool):
+    task = find_task_in_list(st.session_state.root_tasks, task_id)
+    if task:
+        task.is_completed = completed
+
 def main():
-    st.title("🌳 树形任务管理系统")
+    st.set_page_config(layout="wide")
+    st.title("🌳 你上班像玩二游 把所有红点都点完了就可以下班了 🌳")
     st.markdown("""
     **使用方法**:
-    - 添加根任务或子任务
+    - 添加多个根任务或子任务
+    - 点击▶展开父任务查看子任务
     - 点击任务名称可以编辑
     - 勾选复选框标记叶子任务为完成
     - 父任务状态自动根据子任务更新
     """)
     
-    # 初始化会话状态
-    if "root_task" not in st.session_state:
-        st.session_state.root_task = TaskNode("我的项目")
+    if "root_tasks" not in st.session_state:
+        st.session_state.root_tasks: List[TaskNode] = []
     
     if "editing_task_id" not in st.session_state:
         st.session_state.editing_task_id = None
     
-    # 侧边栏 - 添加任务
+    # 侧边栏
     with st.sidebar:
-        st.header("添加任务")
-        parent_task_id = st.selectbox(
-            "父任务",
-            options=get_all_task_options(st.session_state.root_task),
-            format_func=lambda x: x[1],
-            key="parent_task_select"
-        )
-        new_task_name = st.text_input("任务名称")
-        new_task_desc = st.text_area("任务描述")
-        if st.button("添加任务"):
-            if new_task_name:
-                parent_task = st.session_state.root_task.find_task_by_id(parent_task_id[0])
-                if parent_task:
-                    parent_task.add_child(new_task_name, new_task_desc)
-                    st.success(f"已添加子任务 '{new_task_name}'")
-                else:
-                    st.error("找不到父任务")
+        st.header("任务操作")
+        
+        st.subheader("添加根任务")
+        new_root_name = st.text_input("根任务名称", key="new_root_name")
+        new_root_desc = st.text_area("根任务描述", key="new_root_desc")
+        if st.button("添加根任务"):
+            if new_root_name:
+                st.session_state.root_tasks.append(
+                    TaskNode(new_root_name, new_root_desc)
+                )
+                st.success(f"已添加根任务 '{new_root_name}'")
             else:
                 st.warning("请输入任务名称")
-    
-    # 主界面 - 显示和编辑任务
-    st.header("任务树")
-    
-    # 递归渲染任务树
-    def render_task(task, level=0):
-        col1, col2, col3 = st.columns([0.1, 0.7, 0.2])
         
-        with col1:
-            if not task.children:  # 只有叶子节点可以勾选
-                checked = st.checkbox(
-                    "",
-                    value=task.is_completed,
-                    key=f"check_{task.task_id}",
-                    on_change=lambda: set_task_completed(task.task_id, not task.is_completed)
-                )
-            else:
-                st.write("✓" if task.is_completed else "✗")
-        
-        with col2:
-            if st.session_state.editing_task_id == task.task_id:
-                new_name = st.text_input("名称", value=task.name, key=f"edit_{task.task_id}")
-                new_desc = st.text_area("描述", value=task.description, key=f"desc_{task.task_id}")
-                if st.button("保存", key=f"save_{task.task_id}"):
-                    task.name = new_name
-                    task.description = new_desc
-                    st.session_state.editing_task_id = None
-                    st.experimental_rerun()
-                if st.button("取消", key=f"cancel_{task.task_id}"):
-                    st.session_state.editing_task_id = None
-                    st.experimental_rerun()
-            else:
-                st.markdown(f"**{task.name}**")
-                if task.description:
-                    st.caption(task.description)
-        
-        with col3:
-            if st.button("编辑", key=f"btn_edit_{task.task_id}"):
-                st.session_state.editing_task_id = task.task_id
-                st.experimental_rerun()
-            if st.button("删除", key=f"btn_del_{task.task_id}"):
-                if task.parent:
-                    task.parent.remove_child(task)
-                    st.experimental_rerun()
+        st.subheader("添加子任务")
+        if st.session_state.root_tasks:
+            parent_task_id = st.selectbox(
+                "父任务",
+                options=get_all_task_options(st.session_state.root_tasks),
+                format_func=lambda x: x[1],
+                key="parent_task_select"
+            )
+            new_task_name = st.text_input("子任务名称", key="new_child_name")
+            new_task_desc = st.text_area("子任务描述", key="new_child_desc")
+            if st.button("添加子任务"):
+                if new_task_name:
+                    parent_task = find_task_in_list(st.session_state.root_tasks, parent_task_id[0])
+                    if parent_task:
+                        parent_task.add_child(new_task_name, new_task_desc)
+                        parent_task.is_expanded = True
+                        st.success(f"已添加子任务 '{new_task_name}'")
+                    else:
+                        st.error("找不到父任务")
                 else:
-                    st.warning("不能删除根任务")
+                    st.warning("请输入任务名称")
+        else:
+            st.warning("请先添加根任务")
+    
+    # 主界面
+    st.header("任务列表")
+    
+    if not st.session_state.root_tasks:
+        st.info("暂无任务，请从侧边栏添加根任务")
+    else:
+        def render_task(task: TaskNode, level: int = 0):
+            indent_space = "&nbsp;" * 4 * level  # 统一的缩进计算
+            
+            with st.container():
+                cols = st.columns([0.05, 0.7, 0.15, 0.1])
+                
+                with cols[0]:
+                    # 展开/折叠按钮（仅父任务有）
+                    if task.children:
+                        if st.button("▶" if not task.is_expanded else "▼", 
+                                key=f"expand_{task.task_id}"):
+                            task.toggle_expand()
+                            st.experimental_rerun()
+                    else:
+                        st.write("", key=f"placeholder_{task.task_id}")  # 叶子任务占位保持对齐
+                
+                with cols[1]:
+                    if st.session_state.editing_task_id == task.task_id:
+                        # 编辑模式
+                        new_name = st.text_input("名称", value=task.name, key=f"edit_{task.task_id}")
+                        new_desc = st.text_area("描述", value=task.description, key=f"desc_{task.task_id}")
+                        if st.button("保存", key=f"save_{task.task_id}"):
+                            task.name = new_name
+                            task.description = new_desc
+                            st.session_state.editing_task_id = None
+                            st.experimental_rerun()
+                        if st.button("取消", key=f"cancel_{task.task_id}"):
+                            st.session_state.editing_task_id = None
+                            st.experimental_rerun()
+                    else:
+                        # 显示模式
+                        status = "✓" if task.is_completed else "✗"
+                        display_name = f"{indent_space}{status} {task.name}"
+                        
+                        if task.children:
+                            # 父任务显示
+                            st.markdown(f"**{display_name}**", unsafe_allow_html=True)
+                        else:
+                            # 叶子任务显示（使用checkbox）
+                            checked = st.checkbox(
+                                display_name,
+                                value=task.is_completed,
+                                key=f"check_{task.task_id}",
+                                on_change=lambda: set_task_completed(task.task_id, not task.is_completed),
+                                label_visibility="visible"
+                            )
+                        
+                        # 描述信息（统一缩进）
+                        if task.description:
+                            st.caption(f"{indent_space}{task.description}", unsafe_allow_html=True)
+                
+                # 操作按钮列（保持对齐）
+                with cols[2]:
+                    if st.button("编辑", key=f"btn_edit_{task.task_id}"):
+                        st.session_state.editing_task_id = task.task_id
+                        st.experimental_rerun()
+                
+                with cols[3]:
+                    if st.button("删除", key=f"btn_del_{task.task_id}"):
+                        if task.parent:
+                            task.remove_self()
+                        else:
+                            st.session_state.root_tasks.remove(task)
+                        st.experimental_rerun()
+            
+            # 渲染子任务（如果展开）
+            if task.is_expanded and task.children:
+                for child in task.children:
+                    render_task(child, level + 1)
         
-        # 渲染子任务
-        for child in task.children:
-            render_task(child, level + 1)
+        for root_task in st.session_state.root_tasks:
+            render_task(root_task)
     
-    render_task(st.session_state.root_task)
-    
-    # 导出/导入功能
+    # 数据管理
     st.divider()
     st.header("数据管理")
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("导出任务数据"):
-            data = st.session_state.root_task.to_dict()
+        if st.session_state.root_tasks and st.button("导出任务数据"):
+            data = [task.to_dict() for task in st.session_state.root_tasks]
             st.download_button(
                 label="下载JSON",
                 data=str(data),
@@ -224,11 +262,12 @@ def main():
             try:
                 import json
                 data = json.load(uploaded_file)
-                st.session_state.root_task = TaskNode.from_dict(data)
+                st.session_state.root_tasks = [TaskNode.from_dict(task_data) for task_data in data]
                 st.success("任务数据导入成功！")
                 st.experimental_rerun()
             except Exception as e:
                 st.error(f"导入失败: {str(e)}")
+
 
 
 if __name__ == "__main__":
